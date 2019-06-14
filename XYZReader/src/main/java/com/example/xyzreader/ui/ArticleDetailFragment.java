@@ -1,24 +1,21 @@
 package com.example.xyzreader.ui;
 
-
 import android.app.Fragment;
 import android.app.LoaderManager;
 import android.content.Intent;
 import android.content.Loader;
 import android.database.Cursor;
 import android.graphics.Bitmap;
+import android.graphics.Color;
 import android.graphics.Rect;
-import android.graphics.Typeface;
-import android.graphics.drawable.ColorDrawable;
 import android.os.Build;
 import android.os.Bundle;
 import android.support.annotation.NonNull;
 import android.support.annotation.Nullable;
-import android.support.design.widget.CollapsingToolbarLayout;
-import android.support.v4.app.ActivityCompat;
+import android.support.design.widget.AppBarLayout;
+import android.support.design.widget.FloatingActionButton;
 import android.support.v4.app.ShareCompat;
-import android.support.v4.view.ViewCompat;
-import android.support.v7.app.ActionBar;
+import android.support.v4.widget.NestedScrollView;
 import android.support.v7.app.AppCompatActivity;
 import android.support.v7.graphics.Palette;
 import android.support.v7.widget.Toolbar;
@@ -32,12 +29,19 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewTreeObserver;
 import android.widget.ImageView;
+import android.widget.LinearLayout;
 import android.widget.TextView;
 
 import com.android.volley.VolleyError;
 import com.android.volley.toolbox.ImageLoader;
 import com.example.xyzreader.R;
 import com.example.xyzreader.data.ArticleLoader;
+
+import butterknife.BindView;
+import butterknife.ButterKnife;
+
+import static com.example.xyzreader.ui.ArticleListActivity.EXTRA_CURRENT_ARTICLE_POSITION;
+import static com.example.xyzreader.ui.ArticleListActivity.EXTRA_STARTING_ARTICLE_POSITION;
 
 /**
  * A fragment representing a single Article detail screen. This fragment is
@@ -54,17 +58,33 @@ public class ArticleDetailFragment extends Fragment implements
     private long mItemId;
     private View mRootView;
     private int mMutedColor = 0xFF333333;
-    private ColorDrawable mStatusBarColorDrawable;
-
     private int mTopInset;
-    private View mPhotoContainerView;
-    private ImageView mPhotoView;
-    private boolean mIsCard = false;
-    private int mStatusBarFullOpacityBottom;
     private int mCurrentPosition;
     private int mStartingPosition;
-    private Toolbar detailToolbar;
-    private CollapsingToolbarLayout mCollapsingToolbar;
+    private boolean mIsTransitioning;
+    private long mBackgroundImageFadeMillis;
+
+    @BindView(R.id.scrollView)
+    NestedScrollView mScrollView;
+    @BindView(R.id.photo_container)
+    View mPhotoContainerView;
+    @BindView(R.id.thumbnail)
+    ImageView mPhotoView;
+    @Nullable @BindView(R.id.appbar)
+    AppBarLayout parallaxBar;
+    @BindView(R.id.share_fab)
+    FloatingActionButton mShareFab;
+    @BindView(R.id.meta_bar)
+    LinearLayout metaBar;
+    @BindView(R.id.article_title)
+    TextView titleView;
+    @BindView(R.id.article_byline)
+    TextView bylineView;
+    @BindView(R.id.detail_toolbar)
+    Toolbar detailToolbar;
+    @BindView(R.id.article_body)
+    TextView bodyView;
+    private boolean mIsCard = false;
 
     /**
      * Mandatory empty constructor for the fragment manager to instantiate the
@@ -73,11 +93,11 @@ public class ArticleDetailFragment extends Fragment implements
     public ArticleDetailFragment() {
     }
 
-    public static ArticleDetailFragment newInstance(long itemId,int position , int startingPosition) {
+    public static ArticleDetailFragment newInstance(long itemId, int position, int startingPosition) {
         Bundle arguments = new Bundle();
         arguments.putLong(ARG_ITEM_ID, itemId);
-        arguments.putInt(ArticleListActivity.CURRENT_ITEM_POSITION,position);
-        arguments.putInt(ArticleListActivity.STARTING_ITEM_POSITION,startingPosition);
+        arguments.putInt(EXTRA_CURRENT_ARTICLE_POSITION, position);
+        arguments.putInt(EXTRA_STARTING_ARTICLE_POSITION, startingPosition);
         ArticleDetailFragment fragment = new ArticleDetailFragment();
         fragment.setArguments(arguments);
         return fragment;
@@ -90,23 +110,27 @@ public class ArticleDetailFragment extends Fragment implements
         if (getArguments().containsKey(ARG_ITEM_ID)) {
             mItemId = getArguments().getLong(ARG_ITEM_ID);
         }
-        mStartingPosition = getArguments().getInt(ArticleListActivity.STARTING_ITEM_POSITION);
-        mCurrentPosition = getArguments().getInt(ArticleListActivity.CURRENT_ITEM_POSITION);
-        mIsCard = getResources().getBoolean(R.bool.detail_is_card);
-        mStatusBarFullOpacityBottom = getResources().getDimensionPixelSize(
-                R.dimen.detail_card_top_margin);
-        setHasOptionsMenu(true);
-    }
+        mStartingPosition = getArguments().getInt(EXTRA_STARTING_ARTICLE_POSITION);
+        mCurrentPosition = getArguments().getInt(EXTRA_CURRENT_ARTICLE_POSITION);
+        mIsTransitioning = savedInstanceState == null && mStartingPosition == mCurrentPosition;
 
-    public ArticleDetailActivity getActivityCast() {
-        return (ArticleDetailActivity) getActivity();
+
+        if (Build.VERSION.SDK_INT >= 21) {
+            getActivity().getWindow().setStatusBarColor(Color.TRANSPARENT);
+        }
+
+        mIsCard = getResources().getBoolean(R.bool.detail_is_card);
+        setHasOptionsMenu(true);
     }
 
     @Override
     public void onActivityCreated(Bundle savedInstanceState) {
         super.onActivityCreated(savedInstanceState);
 
-
+        // In support library r8, calling initLoader for a fragment in a FragmentPagerAdapter in
+        // the fragment's onCreate may cause the same LoaderManager to be dealt to multiple
+        // fragments because their mIndex is -1 (haven't been added to the activity yet). Thus,
+        // we do this in onActivityCreated.
         getLoaderManager().initLoader(0, null, this);
     }
 
@@ -114,58 +138,32 @@ public class ArticleDetailFragment extends Fragment implements
     public View onCreateView(LayoutInflater inflater, ViewGroup container,
                              Bundle savedInstanceState) {
         mRootView = inflater.inflate(R.layout.fragment_article_detail, container, false);
-
-
-        mPhotoView = (ImageView) mRootView.findViewById(R.id.photo);
-
-        mPhotoContainerView = mRootView.findViewById(R.id.photo_container);
-
-        mStatusBarColorDrawable = new ColorDrawable(0);
-
-        detailToolbar = (Toolbar) mRootView.findViewById(R.id.detail_toolbar);
-        getActivityCast().setSupportActionBar(detailToolbar);
+        ButterKnife.bind(this, mRootView);
 
         ((AppCompatActivity) getActivity()).setSupportActionBar(detailToolbar);
-
-
-
-        detailToolbar.setNavigationOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                // Respond to the action bar's Up/Home button
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                    getActivity().finishAfterTransition();
-                } else {
-                    getActivity().finish();
-                }
-            }
-        });
-
-        mCollapsingToolbar= (CollapsingToolbarLayout) mRootView.findViewById(R.id.toolbar);
-        mCollapsingToolbar.setTitle(null);
-
-        ActionBar actionBar = getActivityCast().getSupportActionBar();
-        if (actionBar!=null) {
-            actionBar.setHomeButtonEnabled(true);
-            actionBar.setDisplayShowHomeEnabled(true);
-            actionBar.setDisplayHomeAsUpEnabled(true);
-        }
-
-
-
-        mRootView.findViewById(R.id.share_fab).setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View view) {
-                startActivity(Intent.createChooser(ShareCompat.IntentBuilder.from(getActivity())
-                        .setType("text/plain")
-                        .setText("Some sample text")
-                        .getIntent(), getString(R.string.action_share)));
-            }
-        });
+        ((AppCompatActivity) getActivity()).getSupportActionBar().setDisplayHomeAsUpEnabled(true);
+        ((AppCompatActivity) getActivity()).getSupportActionBar().setDisplayShowTitleEnabled(false);
 
         bindViews();
-        //updateStatusBar();
         return mRootView;
+    }
+
+    public void startPostponedEnterTransition() {
+        if (mCurrentPosition == mStartingPosition) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                mPhotoView.getViewTreeObserver().addOnPreDrawListener(new ViewTreeObserver.OnPreDrawListener() {
+                    @Override
+                    public boolean onPreDraw() {
+                        mPhotoView.getViewTreeObserver().removeOnPreDrawListener(this);
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                            getActivity().startPostponedEnterTransition();
+                        }
+                        return true;
+                    }
+                });
+            }
+        }
+
     }
 
 
@@ -174,38 +172,62 @@ public class ArticleDetailFragment extends Fragment implements
             return;
         }
 
-        TextView titleView = (TextView) mRootView.findViewById(R.id.article_title);
-        TextView bylineView = (TextView) mRootView.findViewById(R.id.article_byline);
         bylineView.setMovementMethod(new LinkMovementMethod());
-        TextView bodyView = (TextView) mRootView.findViewById(R.id.article_body);
-        bodyView.setTypeface(Typeface.createFromAsset(getResources().getAssets(), "Rosario-Regular.ttf"));
 
         if (mCursor != null) {
             mRootView.setAlpha(0);
             mRootView.setVisibility(View.VISIBLE);
             mRootView.animate().alpha(1);
-            titleView.setText(mCursor.getString(ArticleLoader.Query.TITLE));
-            bylineView.setText(Html.fromHtml(
+
+            String photo = mCursor.getString(ArticleLoader.Query.PHOTO_URL);
+            final String title = mCursor.getString(ArticleLoader.Query.TITLE);
+            final String time = Html.fromHtml(
                     DateUtils.getRelativeTimeSpanString(
                             mCursor.getLong(ArticleLoader.Query.PUBLISHED_DATE),
                             System.currentTimeMillis(), DateUtils.HOUR_IN_MILLIS,
                             DateUtils.FORMAT_ABBREV_ALL).toString()
-                            + " by <font color='#ffffff'>"
-                            + mCursor.getString(ArticleLoader.Query.AUTHOR)
-                            + "</font>"));
-            bodyView.setText(Html.fromHtml(mCursor.getString(ArticleLoader.Query.BODY)));
+                            + " by "
+                            + mCursor.getString(ArticleLoader.Query.AUTHOR)).toString();
+            final String body = Html.fromHtml(mCursor.getString(ArticleLoader.Query.BODY)).toString();
+            titleView.setText(title);
+            bylineView.setText(time);
+            mPhotoView.setContentDescription(title + time);
+            bodyView.setText(body);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                mPhotoView.setTransitionName(getString(R.string.transition_photo) + String.valueOf(mCurrentPosition));
+            }
+            mShareFab.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View view) {
+                    startActivity(Intent.createChooser(ShareCompat.IntentBuilder.from(getActivity())
+                            .setType("text/plain")
+                            .setText(title + "/n" + time + "/n" + body)
+                            .getIntent(), getString(R.string.action_share)));
+                }
+            });
+
+            /*
+            Glide.with(getActivity())
+                    .load(photo)
+                    .into(mPhotoView);
+            */
+
             ImageLoaderHelper.getInstance(getActivity()).getImageLoader()
-                    .get(mCursor.getString(ArticleLoader.Query.PHOTO_URL), new ImageLoader.ImageListener() {
+                    .get(photo, new ImageLoader.ImageListener() {
                         @Override
                         public void onResponse(ImageLoader.ImageContainer imageContainer, boolean b) {
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                                startPostponedEnterTransition();
+                            }
+
                             Bitmap bitmap = imageContainer.getBitmap();
                             if (bitmap != null) {
-                                Palette p = Palette.generate(bitmap, 12);
-                                mMutedColor = p.getDarkMutedColor(0xFF333333);
+                                Palette p = Palette.from(bitmap).generate();
+                                mMutedColor = p.getDarkMutedColor(0xFF424242);
                                 mPhotoView.setImageBitmap(imageContainer.getBitmap());
-                                mRootView.findViewById(R.id.meta_bar)
-                                        .setBackgroundColor(mMutedColor);
-                                //updateStatusBar();
+                                if (parallaxBar != null){
+                                    metaBar.setBackgroundColor(mMutedColor);
+                                }
                             }
                         }
 
@@ -214,15 +236,6 @@ public class ArticleDetailFragment extends Fragment implements
 
                         }
                     });
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP){
-
-                //setting the shared content transition on photoview
-                ViewCompat.setTransitionName(mPhotoView,getResources().getString(R.string.transition_photo)+ mCurrentPosition);
-
-                //starting the postponed transition.
-                scheduleStartPostponedTransition(mPhotoView);
-            }
 
         } else {
             mRootView.setVisibility(View.GONE);
@@ -262,18 +275,17 @@ public class ArticleDetailFragment extends Fragment implements
         bindViews();
     }
 
-
-    private void scheduleStartPostponedTransition(final View sharedElement) {
-        sharedElement.getViewTreeObserver().addOnPreDrawListener(new ViewTreeObserver.OnPreDrawListener() {
-            @Override
-            public boolean onPreDraw() {
-                sharedElement.getViewTreeObserver().removeOnPreDrawListener(this);
-                ActivityCompat.startPostponedEnterTransition(getActivity());
-                return true;
-            }
-        });
+    @Override
+    public boolean onOptionsItemSelected(MenuItem item) {
+        switch (item.getItemId()) {
+            case android.R.id.home:
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                    getActivity().finishAfterTransition();
+                    return true;
+                }
+        }
+        return super.onOptionsItemSelected(item);
     }
-
 
     /**
      * Returns the shared element that should be transitioned back to the previous Activity,
